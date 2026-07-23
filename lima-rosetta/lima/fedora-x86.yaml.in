@@ -1,0 +1,456 @@
+# SPDX-License-Identifier: GPL-2.0-only
+minimumLimaVersion: 2.1.0
+
+# Native Fedora ARM64 supervisor and kernel. A complete Fedora x86_64
+# userspace is booted below it with systemd-nspawn and translated by Rosetta.
+vmType: vz
+arch: aarch64
+cpus: 4
+memory: 8GiB
+disk: 80GiB
+
+images:
+  - location: https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/aarch64/images/Fedora-Cloud-Base-Generic-44-1.7.aarch64.qcow2
+    arch: aarch64
+    digest: sha256:55c60a3b80d3616a08705afd0459e75fe9f03c54aba7a46e4002a41a72fa0d5b
+    kernel:
+      location: "@@KERNEL_IMAGE@@"
+      digest: sha256:@@KERNEL_SHA256@@
+      cmdline: console=hvc0 console=ttyAMA0,115200n8 no_timer_check systemd.firstboot=off root=/dev/vda2 rootfstype=btrfs rootflags=subvol=root rw
+
+vmOpts:
+  vz:
+    rosetta:
+      enabled: true
+      binfmt: true
+
+mountType: virtiofs
+mounts:
+  - location: "~"
+    writable: false
+
+ssh:
+  localPort: 0
+  loadDotSSHPubKeys: false
+  forwardAgent: false
+  overVsock: true
+
+hostResolver:
+  enabled: true
+  ipv6: false
+
+upgradePackages: false
+containerd:
+  system: false
+  user: false
+
+provision:
+  - mode: system
+    script: |
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+
+      readonly machine_name=fedora-x86
+      readonly machine_root=/var/lib/machines/fedora-x86
+      readonly build_root=/var/lib/machines/.fedora-x86.build
+      readonly image_marker=.fedora44-x86_64-systemd259-rosetta-v2
+      readonly lima_user='{{.User}}'
+      readonly lima_uid='{{.UID}}'
+      readonly lima_gid="$(id -g '{{.User}}')"
+      readonly guest_home="/home/${lima_user}.guest"
+      readonly inner_home="/home/${lima_user}"
+      readonly host_home='/Users/{{.User}}'
+
+      wait_for_rosetta() {
+        local _
+        for _ in $(seq 1 60); do
+          if [[ -x /mnt/lima-rosetta/rosetta ]] &&
+             [[ -r /proc/sys/fs/binfmt_misc/rosetta ]] &&
+             grep -qx enabled /proc/sys/fs/binfmt_misc/rosetta; then
+            return 0
+          fi
+          sleep 1
+        done
+        echo "Rosetta or its x86_64 binfmt registration did not become ready" >&2
+        return 1
+      }
+
+      ensure_outer_tools() {
+        if ! command -v systemd-nspawn >/dev/null ||
+           ! command -v machinectl >/dev/null; then
+          dnf -y --releasever=44 --setopt=install_weak_deps=False install systemd-container
+        fi
+      }
+
+      cleanup_build_mounts() {
+        local path
+        for path in run dev sys proc; do
+          if mountpoint -q "${build_root}/${path}"; then
+            umount -R "${build_root}/${path}"
+          fi
+        done
+      }
+
+      build_userspace() {
+        systemctl stop "systemd-nspawn@${machine_name}.service" 2>/dev/null || true
+        cleanup_build_mounts
+        rm -rf "$build_root"
+        install -d -m 0755 \
+          "$build_root/proc" \
+          "$build_root/sys" \
+          "$build_root/dev" \
+          "$build_root/run"
+
+        trap cleanup_build_mounts RETURN
+        local path
+        for path in proc sys dev run; do
+          mount --rbind "/${path}" "${build_root}/${path}"
+          mount --make-rslave "${build_root}/${path}"
+        done
+
+        # DNF verifies Fedora's repository signatures and resolves a complete
+        # x86_64 userspace without needing an unofficial rootfs archive.
+        dnf \
+          --assumeyes \
+          --no-docs \
+          --installroot="$build_root" \
+          --releasever=44 \
+          --forcearch=x86_64 \
+          --use-host-config \
+          --setopt=install_weak_deps=False \
+          install \
+            basesystem \
+            bash \
+            bash-completion \
+            ca-certificates \
+            coreutils \
+            curl \
+            dbus-broker \
+            dnf5 \
+            fedora-release-container \
+            fedora-repos \
+            file \
+            findutils \
+            glibc-langpack-en \
+            grep \
+            hostname \
+            iproute \
+            iputils \
+            less \
+            openssh-clients \
+            pam \
+            passwd \
+            procps-ng \
+            sed \
+            shadow-utils \
+            sudo \
+            systemd \
+            systemd-pam \
+            systemd-udev \
+            tar \
+            tzdata \
+            util-linux \
+            vim-minimal \
+            which
+
+        cleanup_build_mounts
+        trap - RETURN
+
+        # Rosetta is a JIT, so an inherited MDWE policy prevents translated
+        # service binaries from starting. Keep systemd's syscall allowlists,
+        # but return ENOSYS for denied calls so Rosetta/libc can fall back.
+        install -d -m 0755 \
+          "$build_root/etc/systemd/system/service.d" \
+          "$build_root/etc/systemd/user/service.d"
+        tee "$build_root/etc/systemd/system/service.d/99-rosetta-compat.conf" >/dev/null <<'EOF'
+      [Service]
+      MemoryDenyWriteExecute=no
+      SystemCallErrorNumber=ENOSYS
+      EOF
+        install -m 0644 \
+          "$build_root/etc/systemd/system/service.d/99-rosetta-compat.conf" \
+          "$build_root/etc/systemd/user/service.d/99-rosetta-compat.conf"
+
+        # The inner manager shares the outer kernel's binfmt_misc registry.
+        # Never let it flush or replace Lima's Rosetta registration.
+        install -d -m 0755 "$build_root/etc/systemd/system"
+        ln -sfn /dev/null "$build_root/etc/systemd/system/systemd-binfmt.service"
+
+        : >"$build_root/etc/machine-id"
+        install -d -m 0755 \
+          "$build_root/var/lib/dbus" \
+          "$build_root/var/lib/systemd/linger" \
+          "$build_root/var/log/journal"
+        ln -sfn /etc/machine-id "$build_root/var/lib/dbus/machine-id"
+        rm -f "$build_root/var/lib/systemd/random-seed"
+
+        systemd-nspawn \
+          --quiet \
+          --pipe \
+          --as-pid2 \
+          --register=no \
+          --directory="$build_root" \
+          --setenv=LIMA_USER="$lima_user" \
+          --setenv=LIMA_UID="$lima_uid" \
+          --setenv=LIMA_GID="$lima_gid" \
+          /bin/bash -s <<'INNER_SETUP'
+      set -Eeuo pipefail
+
+      if ! getent group "$LIMA_GID" >/dev/null; then
+        groupadd --gid "$LIMA_GID" "$LIMA_USER"
+      fi
+      user_group="$(getent group "$LIMA_GID" | cut -d: -f1)"
+      if ! id "$LIMA_USER" >/dev/null 2>&1; then
+        useradd \
+          --uid "$LIMA_UID" \
+          --gid "$user_group" \
+          --create-home \
+          --home-dir "/home/$LIMA_USER" \
+          --shell /bin/bash \
+          "$LIMA_USER"
+      fi
+
+      install -d -m 0755 "/home/$LIMA_USER"
+      chown "$LIMA_UID:$LIMA_GID" "/home/$LIMA_USER"
+      printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$LIMA_USER" >/etc/sudoers.d/90-lima
+      chmod 0440 /etc/sudoers.d/90-lima
+      printf 'LANG=C.UTF-8\n' >/etc/locale.conf
+      printf 'fedora-x86\n' >/etc/hostname
+      INNER_SETUP
+
+        touch "$build_root/var/lib/systemd/linger/$lima_user"
+        touch "$build_root/$image_marker"
+
+        rm -rf /var/lib/machines/.fedora-x86.previous
+        if [[ -e "$machine_root" ]]; then
+          mv "$machine_root" /var/lib/machines/.fedora-x86.previous
+        fi
+        mv "$build_root" "$machine_root"
+        rm -rf /var/lib/machines/.fedora-x86.previous
+      }
+
+      write_runtime_config() {
+        install -d -m 0755 "$guest_home"
+        chown "$lima_uid:$lima_gid" "$guest_home"
+
+        install -d -m 0755 /etc/systemd/nspawn
+        tee "/etc/systemd/nspawn/${machine_name}.nspawn" >/dev/null <<EOF
+      [Exec]
+      Boot=yes
+      Hostname=fedora-x86
+      # Deliberately keeps inner IDs unremapped for developer convenience.
+      # This machine is not an isolation boundary from the outer Lima VM.
+      PrivateUsers=no
+      ResolvConf=bind-host
+
+      [Files]
+      Bind=${guest_home}:${inner_home}
+      BindReadOnly=/mnt/lima-rosetta
+      BindReadOnly=/usr/lib/modules
+      BindReadOnly=${host_home}
+      BindReadOnly=/etc/localtime
+
+      [Network]
+      # Deliberately shares the outer network namespace.
+      Private=no
+      VirtualEthernet=no
+      EOF
+
+        install -d -m 0755 /usr/local/libexec
+        tee /usr/local/libexec/rosetta-ready >/dev/null <<'EOF'
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+      for _ in {1..60}; do
+        if [[ -x /mnt/lima-rosetta/rosetta ]] &&
+           [[ -r /proc/sys/fs/binfmt_misc/rosetta ]] &&
+           grep -qx enabled /proc/sys/fs/binfmt_misc/rosetta; then
+          exit 0
+        fi
+        sleep 1
+      done
+      echo "Rosetta or its x86_64 binfmt registration did not become ready" >&2
+      exit 1
+      EOF
+        chmod 0755 /usr/local/libexec/rosetta-ready
+
+        tee /etc/systemd/system/rosetta-ready.service >/dev/null <<'EOF'
+      [Unit]
+      Description=Verify Lima Rosetta and x86_64 binfmt registration
+      Wants=systemd-binfmt.service
+      After=systemd-binfmt.service
+      RequiresMountsFor=/mnt/lima-rosetta
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/libexec/rosetta-ready
+      RemainAfterExit=yes
+      EOF
+
+        install -d -m 0755 "/etc/systemd/system/systemd-nspawn@${machine_name}.service.d"
+        tee "/etc/systemd/system/systemd-nspawn@${machine_name}.service.d/override.conf" >/dev/null <<EOF
+      [Unit]
+      Requires=rosetta-ready.service
+      After=rosetta-ready.service network-online.target
+      Wants=network-online.target
+      ConditionPathExists=${machine_root}/${image_marker}
+
+      [Service]
+      Restart=on-failure
+      RestartSec=2s
+      TimeoutStartSec=120s
+      EOF
+
+        tee /usr/local/bin/x86 >/dev/null <<EOF
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+
+      readonly machine_name=${machine_name}
+      readonly inner_user=${lima_user}
+      readonly inner_uid=${lima_uid}
+      readonly inner_gid=${lima_gid}
+      readonly inner_home=${inner_home}
+      readonly inner_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+      original=\${SSH_ORIGINAL_COMMAND-}
+
+      # Lima maintenance must remain in the native supervisor, including
+      # readiness checks that run before the inner machine is available.
+      if [[ -n "\$original" ]]; then
+        case "\$original" in
+          internal-sftp*)
+            exec /usr/libexec/openssh/sftp-server
+            ;;
+          *sftp-server*|scp\ *|rsync\ *|*lima-guestagent*|*'/mnt/lima-cidata/'*)
+            exec /bin/bash -lc "\$original"
+            ;;
+          lima-outer\ *)
+            exec /bin/bash -lc "\${original#lima-outer }"
+            ;;
+        esac
+      fi
+
+      leader=
+      for _ in {1..60}; do
+        leader="\$(sudo -n machinectl show "\$machine_name" -p Leader --value 2>/dev/null || true)"
+        [[ -n "\$leader" ]] && break
+        sleep 1
+      done
+      if [[ -z "\$leader" ]]; then
+        echo "Fedora x86_64 userspace is not running" >&2
+        exit 1
+      fi
+
+      run=(
+        sudo -n systemd-run
+        --machine="\$machine_name"
+        --quiet
+        --wait
+        --collect
+        --uid="\$inner_user"
+        --working-directory="\$inner_home"
+        --setenv="HOME=\$inner_home"
+        --setenv="USER=\$inner_user"
+        --setenv="LOGNAME=\$inner_user"
+        --setenv=SHELL=/bin/bash
+        --setenv="PATH=\$inner_path"
+        --setenv="XDG_RUNTIME_DIR=/run/user/\$inner_uid"
+        --setenv="DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\$inner_uid/bus"
+      )
+
+      if [[ -n "\$original" ]]; then
+        if [[ -t 0 && -t 1 ]]; then
+          exec "\${run[@]}" --pty /bin/bash -lc "\$original"
+        fi
+        exec "\${run[@]}" --pipe /bin/bash -lc "\$original"
+      fi
+      if (( \$# == 0 )) || { (( \$# == 1 )) && [[ "\$1" == -l ]]; }; then
+        exec "\${run[@]}" --pty /bin/bash -l
+      fi
+      if (( \$# == 2 )) && [[ "\$1" == -c ]]; then
+        exec "\${run[@]}" --pipe /bin/bash -lc "\$2"
+      fi
+      if (( \$# == 3 )) && [[ "\$1" == -l && "\$2" == -c ]]; then
+        exec "\${run[@]}" --pipe /bin/bash -lc "\$3"
+      fi
+      exec "\${run[@]}" --pipe "\$@"
+      EOF
+        chmod 0755 /usr/local/bin/x86
+
+        install -d -m 0755 /etc/sudoers.d /etc/ssh/sshd_config.d
+        printf '%s ALL=(root) NOPASSWD: /usr/bin/machinectl, /usr/bin/nsenter, /usr/bin/systemd-run\n' "$lima_user" \
+          >/etc/sudoers.d/90-lima-fedora-x86
+        chmod 0440 /etc/sudoers.d/90-lima-fedora-x86
+        printf 'Match User %s\n    ForceCommand /usr/local/bin/x86\n' "$lima_user" \
+          >/etc/ssh/sshd_config.d/99-fedora-x86-gateway.conf
+
+        restorecon -RF \
+          "$machine_root" \
+          "$guest_home" \
+          /usr/local/bin/x86 \
+          /usr/local/libexec/rosetta-ready \
+          "/etc/systemd/nspawn/${machine_name}.nspawn" \
+          /etc/systemd/system/rosetta-ready.service \
+          "/etc/systemd/system/systemd-nspawn@${machine_name}.service.d" \
+          /etc/sudoers.d/90-lima-fedora-x86 \
+          /etc/ssh/sshd_config.d/99-fedora-x86-gateway.conf 2>/dev/null || true
+      }
+
+      verify_userspace() {
+        local leader restarts service state
+        for _ in $(seq 1 120); do
+          state="$(machinectl show "$machine_name" -p State --value 2>/dev/null || true)"
+          leader="$(machinectl show "$machine_name" -p Leader --value 2>/dev/null || true)"
+          if [[ "$state" == running ]] && [[ -n "$leader" ]] &&
+             nsenter --target "$leader" --mount --uts --ipc --net --pid --root --wd \
+               /bin/systemctl is-system-running 2>/dev/null | grep -qx running; then
+            break
+          fi
+          sleep 1
+        done
+
+        [[ "$(machinectl show "$machine_name" -p State --value)" == running ]]
+        leader="$(machinectl show "$machine_name" -p Leader --value)"
+        # Give early-boot services time to exercise Rosetta before accepting
+        # an automatically recovered process as a clean start.
+        sleep 5
+        nsenter --target "$leader" --mount --uts --ipc --net --pid --root --wd \
+          /bin/systemctl is-active --quiet \
+            systemd-journald.service \
+            dbus-broker.service \
+            systemd-logind.service
+        nsenter --target "$leader" --mount --uts --ipc --net --pid --root --wd \
+          /bin/systemctl --failed --no-legend | grep -q . && return 1 || true
+        for service in \
+          systemd-journald.service \
+          dbus-broker.service \
+          systemd-logind.service; do
+          restarts="$(
+            nsenter --target "$leader" --mount --uts --ipc --net --pid --root --wd \
+              /bin/systemctl show --property=NRestarts --value "$service"
+          )"
+          if [[ "$service" == systemd-journald.service ]] &&
+             [[ "$restarts" -ne 0 ]]; then
+            echo "warning: journald recovered from the known Rosetta assertion" >&2
+          else
+            [[ "$restarts" -eq 0 ]]
+          fi
+        done
+        nsenter --target "$leader" --mount --uts --ipc --net --pid --root --wd \
+          /bin/busctl --system --no-pager list >/dev/null
+      }
+
+      ensure_outer_tools
+      wait_for_rosetta
+      install -d -m 0755 /var/lib/machines "$guest_home"
+
+      if [[ ! -f "$machine_root/$image_marker" ]]; then
+        build_userspace
+      fi
+
+      write_runtime_config
+      systemctl daemon-reload
+      systemctl add-wants multi-user.target rosetta-ready.service
+      systemctl add-wants multi-user.target "systemd-nspawn@${machine_name}.service"
+      systemctl restart "systemd-nspawn@${machine_name}.service"
+      verify_userspace
+      systemctl reload sshd
