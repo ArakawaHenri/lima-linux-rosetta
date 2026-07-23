@@ -2466,6 +2466,18 @@ test_has_gicv5_legacy(const struct arm64_cpu_capabilities *entry, int scope)
 	return !!(read_sysreg_s(SYS_ICC_IDR0_EL1) & ICC_IDR0_EL1_GCIE_LEGACY);
 }
 
+#ifdef CONFIG_ARM64_TSO
+static bool has_apple_tso(const struct arm64_cpu_capabilities *entry,
+			  int scope)
+{
+	(void)entry;
+	(void)scope;
+
+	return read_cpuid_implementor() == ARM_CPU_IMP_APPLE &&
+	       (read_sysreg(aidr_el1) & SYS_AIDR_EL1_TSO_MASK);
+}
+#endif
+
 static const struct arm64_cpu_capabilities arm64_features[] = {
 	{
 		.capability = ARM64_ALWAYS_BOOT,
@@ -2685,6 +2697,14 @@ static const struct arm64_cpu_capabilities arm64_features[] = {
 		.matches = has_cpuid_feature,
 		ARM64_CPUID_FIELDS(ID_AA64ISAR0_EL1, TLB, RANGE)
 	},
+#ifdef CONFIG_ARM64_TSO
+	{
+		.desc = "Apple Silicon TSO",
+		.capability = ARM64_HAS_TSO,
+		.type = ARM64_CPUCAP_EARLY_LOCAL_CPU_FEATURE,
+		.matches = has_apple_tso,
+	},
+#endif
 #ifdef CONFIG_ARM64_HW_AFDBM
 	{
 		.desc = "Hardware dirty bit management",

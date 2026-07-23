@@ -42,6 +42,8 @@ cpucap_is_possible(const unsigned int cap)
 		return IS_ENABLED(CONFIG_ARM64_BTI);
 	case ARM64_HAS_TLB_RANGE:
 		return IS_ENABLED(CONFIG_ARM64_TLB_RANGE);
+	case ARM64_HAS_TSO:
+		return IS_ENABLED(CONFIG_ARM64_TSO);
 	case ARM64_HAS_S1POE:
 		return IS_ENABLED(CONFIG_ARM64_POE);
 	case ARM64_HAS_GCS:

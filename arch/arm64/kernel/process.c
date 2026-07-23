@@ -58,6 +58,43 @@
 #include <asm/stacktrace.h>
 #include <asm/switch_to.h>
 #include <asm/system_misc.h>
+/*
+ * Copyright © 2024 Apple Inc. All Rights Reserved.
+ * Disclaimer: IMPORTANT: This Apple software is supplied to you by Apple Inc.
+ * ("Apple") in consideration of your agreement to the following terms, and
+ * your use, installation, modification or redistribution of this Apple
+ * software constitutes acceptance of these terms. If you do not agree with
+ * these terms, please do not use, install, modify or redistribute this Apple
+ * software.
+ * In consideration of your agreement to abide by the following terms, and
+ * subject to these terms, Apple grants you a personal, non-exclusive license,
+ * under Apple's copyrights in this original Apple software (the "Apple
+ * Software"), to use, reproduce, modify and redistribute the Apple Software,
+ * with or without modifications, in source and/or binary forms; provided that
+ * if you redistribute the Apple Software in its entirety and without
+ * modifications, you must retain this notice and the following text and
+ * disclaimers in all such redistributions of the Apple Software. Neither the
+ * name, trademarks, service marks or logos of Apple Inc. may be used to
+ * endorse or promote products derived from the Apple Software without specific
+ * prior written permission from Apple. Except as expressly stated in this
+ * notice, no other rights or licenses, express or implied, are granted by
+ * Apple herein, including but not limited to any patent rights that may be
+ * infringed by your derivative works or by other works in which the Apple
+ * Software may be incorporated.
+ * The Apple Software is provided by Apple on an "AS IS" basis. APPLE MAKES NO
+ * WARRANTIES, EXPRESS OR IMPLIED, INCLUDING WITHOUT LIMITATION THE IMPLIED
+ * WARRANTIES OF NON-INFRINGEMENT, MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE, REGARDING THE APPLE SOFTWARE OR ITS USE AND OPERATION ALONE OR IN
+ * COMBINATION WITH YOUR PRODUCTS.
+ * IN NO EVENT SHALL APPLE BE LIABLE FOR ANY SPECIAL, INDIRECT, INCIDENTAL OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) ARISING IN ANY WAY OUT OF THE USE, REPRODUCTION, MODIFICATION
+ * AND/OR DISTRIBUTION OF THE APPLE SOFTWARE, HOWEVER CAUSED AND WHETHER UNDER
+ * THEORY OF CONTRACT, TORT (INCLUDING NEGLIGENCE), STRICT LIABILITY OR
+ * OTHERWISE, EVEN IF APPLE HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+#include <asm/tso.h>
 
 #if defined(CONFIG_STACKPROTECTOR) && !defined(CONFIG_STACKPROTECTOR_PER_TASK)
 #include <linux/stackprotector.h>
@@ -754,6 +791,8 @@ struct task_struct *__switch_to(struct task_struct *prev,
 	ptrauth_thread_switch_user(next);
 	permission_overlay_switch(next);
 	gcs_thread_switch(next);
+	if (system_supports_tso())
+		tso_thread_switch(next);
 
 	/*
 	 * Complete any pending TLB or cache maintenance on this CPU in case the
@@ -876,6 +915,10 @@ void arch_setup_new_exec(void)
 		arch_prctl_spec_ctrl_set(current, PR_SPEC_STORE_BYPASS,
 					 PR_SPEC_ENABLE);
 	}
+
+#ifdef CONFIG_ARM64_TSO
+	modify_tso_enable(false);
+#endif
 }
 
 #ifdef CONFIG_ARM64_TAGGED_ADDR_ABI
@@ -1005,4 +1048,55 @@ int set_tsc_mode(unsigned int val)
 		return -EINVAL;
 
 	return do_set_tsc_mode(val);
+}
+
+static int arch_set_mem_model_default(struct task_struct *task)
+{
+	int return_error = 0;
+
+#ifdef CONFIG_ARM64_TSO
+	int modify_tso_enable_error = modify_tso_enable(false);
+
+	if (modify_tso_enable_error == -EOPNOTSUPP)
+		/*
+		 * TSO is the only other memory model on arm64. If TSO is not
+		 * supported, the default memory model must already be set.
+		 */
+		return_error = 0;
+	else
+		return_error = modify_tso_enable_error;
+
+	if (!return_error)
+		task->thread.tso = false;
+
+	return return_error;
+#endif
+
+	return return_error;
+}
+
+#ifdef CONFIG_ARM64_TSO
+static int arch_set_mem_model_tso(struct task_struct *task)
+{
+	int error = modify_tso_enable(true);
+
+	if (!error)
+		task->thread.tso = true;
+
+	return error;
+}
+#endif /* CONFIG_ARM64_TSO */
+
+int arch_set_mem_model(struct task_struct *task, int memory_model)
+{
+	switch (memory_model) {
+	case PR_SET_MEM_MODEL_DEFAULT:
+		return arch_set_mem_model_default(task);
+#ifdef CONFIG_ARM64_TSO
+	case PR_SET_MEM_MODEL_TSO:
+		return arch_set_mem_model_tso(task);
+#endif /* CONFIG_ARM64_TSO */
+	default:
+		return -EINVAL;
+	}
 }
