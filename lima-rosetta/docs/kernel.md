@@ -15,14 +15,21 @@ The port keeps Apple's userspace ABI unchanged: `PR_SET_MEM_MODEL` with
 kept under `kernel/patches/` for rebasing, and `tests/static-checks.sh`
 verifies that it still reverse-applies cleanly against the tree.
 
-The port changes one thing relative to Apple's 6.10 patch: TSO detection.
-The original reread `MIDR_EL1`, `AIDR_EL1`, and `ACTLR_EL1` in the scheduler
-context-switch path. This tree records the feature once as `ARM64_HAS_TSO`
-in the CPU capability framework. On unsupported systems, alternatives patch
-out the hot-path test and no Apple system registers are read per switch; on
-supported systems the switch path reads `ACTLR_EL1` once and writes it only
-when the incoming task needs a different model. The capability framework also
-supplies the secondary-CPU and CPU-hotplug consistency checks.
+The port makes two deliberate changes to Apple's 6.10 patch:
+
+- TSO detection moves from rereading `MIDR_EL1`/`AIDR_EL1` on the
+  context-switch path to a one-time `ARM64_HAS_TSO` CPU capability. On
+  unsupported systems, alternatives patch out the hot-path test and no
+  Apple system registers are read per switch; on supported systems the
+  switch path reads `ACTLR_EL1` once and writes it only when the incoming
+  task needs a different model. The capability framework also supplies
+  the secondary-CPU and CPU-hotplug consistency checks.
+- `arch_setup_new_exec()` clears the per-thread shadow flag together
+  with the hardware bit. The original cleared only the hardware, so a
+  child forked between exec and the next context switch could inherit a
+  stale TSO shadow and be scheduled with TSO enabled without opting
+  in — a performance leak, not a correctness issue, since TSO is the
+  stronger memory model.
 
 ## Configuration
 

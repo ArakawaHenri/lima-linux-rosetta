@@ -917,7 +917,13 @@ void arch_setup_new_exec(void)
 	}
 
 #ifdef CONFIG_ARM64_TSO
+	/*
+	 * Keep the shadow flag in sync with the hardware bit: a child
+	 * forked before the next context switch must not inherit a stale
+	 * TSO state and be scheduled with TSO without opting in.
+	 */
 	modify_tso_enable(false);
+	current->thread.tso = false;
 #endif
 }
 
