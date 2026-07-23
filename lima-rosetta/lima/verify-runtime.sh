@@ -87,6 +87,16 @@ printf 'inner kernel view: '
 test "$("${enter[@]}" /bin/uname -m)" = x86_64
 test "$("${enter[@]}" /bin/rpm --eval '%{_arch}')" = x86_64
 
+printf 'inner CPU view:\n'
+"${enter[@]}" /usr/local/libexec/rosetta-cpuinfo-check
+
+# The leader's mount table is the machine's mount namespace; reading it
+# natively avoids relying on a translated findmnt, which could itself be
+# subject to Rosetta's /proc path handling.
+awk '$5 == "/proc/cpuinfo" && $6 ~ /(^|,)ro(,|$)/ { ok = 1 } END { exit !ok }' \
+  "/proc/$leader/mountinfo"
+printf 'cpuinfo bind: read-only /proc/cpuinfo\n'
+
 printf 'inner state: '
 "${enter[@]}" /bin/systemctl is-system-running
 test -z "$("${enter[@]}" /bin/systemctl --failed --no-legend --plain)"

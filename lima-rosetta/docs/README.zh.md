@@ -46,6 +46,23 @@ syscall 白名单仍然保留，只是拒绝时的 errno 改为 `ENOSYS`，让 R
 内外两层共享同一个内核 `binfmt_misc` 注册表，只能由外层 Lima 维护 Rosetta
 注册。
 
+## 一致的 CPU 信息
+
+Rosetta 会为绝对路径读取的 `/proc/cpuinfo` 合成 x86_64 内容；但 util-linux
+2.41.5 的 `lscpu` 会先打开 `/proc`，再相对该目录读取 `cpuinfo`。这条路径
+可能绕过 Rosetta 的合成视图，造成 `Architecture: x86_64` 与 ARM
+`Features`、ARM vendor 同时出现。
+
+模板不替换 `lscpu`，不使用 `LD_PRELOAD`，也不写死某款 CPU。内层启动前，
+外层 service 让 Rosetta 自己生成当次 x86_64 CPU 视图，校验 CPU 数、字段和
+long-mode 标志后原子发布；nspawn 将它传入内层，早期 mount unit 再以只读
+方式覆盖 `/proc/cpuinfo`。文件在每次外层启动时重新生成，Rosetta 输出异常
+则阻止内层启动，而不是静默退回 ARM 信息。
+
+该机制位于 `/etc` 与 `/var/lib/lima-rosetta`，不归内层 RPM 所有，因此
+`dnf upgrade` 不会覆盖。它只保证普通用户态 CPU 探测一致；底层 sysfs、
+模块、eBPF 与架构相关 ioctl 仍如实反映 ARM64 内核。
+
 ## 已知问题：journald 偶发 SIGTRAP
 
 journald 读取 `/proc/<pid>/exe` 时可能撞上短生命周期进程退出的竞态；

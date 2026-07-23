@@ -25,6 +25,21 @@ grep -qx '# CONFIG_MODULES is not set' \
 
 test "$(grep -c '@@KERNEL_IMAGE@@' "${project_dir}/lima/fedora-x86.yaml.in")" -eq 1
 test "$(grep -c '@@KERNEL_SHA256@@' "${project_dir}/lima/fedora-x86.yaml.in")" -eq 1
+# Match the literal template variable, not this test process's environment.
+# shellcheck disable=SC2016
+test "$(
+  grep -c -F \
+    'BindReadOnly=${cpuinfo_path}:/mnt/lima-cpuinfo' \
+    "${project_dir}/lima/fedora-x86.yaml.in"
+)" -eq 1
+grep -qF 'rosetta-cpuinfo.service' \
+  "${project_dir}/lima/fedora-x86.yaml.in"
+grep -qF 'proc-cpuinfo.mount' \
+  "${project_dir}/lima/fedora-x86.yaml.in"
+grep -qF 'rosetta-cpuinfo-validate' \
+  "${project_dir}/lima/fedora-x86.yaml.in"
+grep -qF 'rosetta-cpuinfo-check' \
+  "${project_dir}/lima/verify-runtime.sh"
 
 if grep -R -n -F "$HOME" "$project_dir"; then
   printf 'found a machine-specific path\n' >&2

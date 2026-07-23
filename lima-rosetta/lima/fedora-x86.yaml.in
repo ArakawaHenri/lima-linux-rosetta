@@ -53,6 +53,8 @@ provision:
       readonly machine_name=fedora-x86
       readonly machine_root=/var/lib/machines/fedora-x86
       readonly build_root=/var/lib/machines/.fedora-x86.build
+      readonly cpuinfo_dir=/var/lib/lima-rosetta
+      readonly cpuinfo_path="${cpuinfo_dir}/${machine_name}.cpuinfo"
       readonly image_marker=.fedora44-x86_64-systemd259-rosetta-v2
       readonly lima_user='{{.User}}'
       readonly lima_uid='{{.UID}}'
@@ -131,6 +133,7 @@ provision:
             fedora-repos \
             file \
             findutils \
+            gawk \
             glibc-langpack-en \
             grep \
             hostname \
@@ -249,6 +252,7 @@ provision:
       BindReadOnly=/usr/lib/modules
       BindReadOnly=${host_home}
       BindReadOnly=/etc/localtime
+      BindReadOnly=${cpuinfo_path}:/mnt/lima-cpuinfo
 
       [Network]
       # Deliberately shares the outer network namespace.
@@ -273,6 +277,95 @@ provision:
       EOF
         chmod 0755 /usr/local/libexec/rosetta-ready
 
+        tee /usr/local/libexec/rosetta-cpuinfo >/dev/null <<'EOF'
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+
+      readonly machine_root="${1:?missing machine root}"
+      readonly cpuinfo_target="${2:?missing cpuinfo target}"
+      case "$machine_root" in
+        /var/lib/machines/*) ;;
+        *) echo "refusing unexpected machine root: $machine_root" >&2; exit 1 ;;
+      esac
+      case "$cpuinfo_target" in
+        /var/lib/lima-rosetta/*.cpuinfo) ;;
+        *) echo "refusing unexpected cpuinfo target: $cpuinfo_target" >&2; exit 1 ;;
+      esac
+
+      install -d -m 0755 "$(dirname -- "$cpuinfo_target")"
+      temporary="$(mktemp "${cpuinfo_target}.new.XXXXXX")"
+      readonly temporary
+      cleanup() {
+        rm -f -- "$temporary"
+      }
+      trap cleanup EXIT
+
+      # Rosetta already synthesizes a coherent x86_64 /proc/cpuinfo for an
+      # absolute-path open. Capture that view in a short-lived, non-booted
+      # nspawn environment. The main machine later bind-mounts this exact file
+      # so relative openat() users cannot bypass Rosetta's path translation.
+      systemd-nspawn \
+        --quiet \
+        --pipe \
+        --as-pid2 \
+        --register=no \
+        --settings=no \
+        --directory="$machine_root" \
+        /bin/cat /proc/cpuinfo >"$temporary"
+
+      expected="$(getconf _NPROCESSORS_ONLN)"
+      counts="$(/usr/local/libexec/rosetta-cpuinfo-validate \
+        "$temporary" "$expected")"
+      processors="${counts%% *}"
+
+      chmod 0444 "$temporary"
+      mv -f -- "$temporary" "$cpuinfo_target"
+      restorecon -F "$cpuinfo_target" 2>/dev/null || true
+      trap - EXIT
+      printf 'Generated Rosetta x86_64 CPU view (%s processors): %s\n' \
+        "$processors" "$cpuinfo_target"
+      EOF
+        chmod 0755 /usr/local/libexec/rosetta-cpuinfo
+
+        tee /usr/local/libexec/rosetta-cpuinfo-validate >/dev/null <<'EOF'
+      #!/usr/bin/env bash
+      # Validate that a file is a coherent x86_64 /proc/cpuinfo with the
+      # expected number of processor records: every record carries
+      # vendor_id and the long-mode flag, and no ARM64 field appears.
+      # Prints the four counters; on failure it names the violated
+      # invariant on stderr and exits non-zero.
+      set -Eeuo pipefail
+
+      file="${1:?missing cpuinfo path}"
+      expected="${2:?missing expected processor count}"
+      case "$expected" in
+        ''|*[!0-9]*) echo "invalid processor count: $expected" >&2; exit 1 ;;
+      esac
+      [[ -r "$file" ]] || {
+        echo "cpuinfo is not readable: $file" >&2
+        exit 1
+      }
+
+      awk -v expected="$expected" '
+        /^processor[[:space:]]*:/ { processors++ }
+        /^vendor_id[[:space:]]*:/ { vendors++ }
+        /^flags[[:space:]]*:/ && /(^|[[:space:]])lm([[:space:]]|$)/ { longmode++ }
+        /^CPU implementer[[:space:]]*:/ || /^Features[[:space:]]*:/ { arm++ }
+        END {
+          printf "%d %d %d %d\n", processors + 0, vendors + 0, longmode + 0, arm + 0
+          if (processors != expected)      reason = "processor count mismatch"
+          else if (vendors != processors)  reason = "records without vendor_id"
+          else if (longmode != processors) reason = "records without long mode"
+          else if (arm != 0)               reason = "ARM64 cpuinfo fields present"
+          if (reason != "") {
+            printf "invalid x86_64 cpuinfo: %s\n", reason > "/dev/stderr"
+            exit 1
+          }
+        }
+      ' "$file"
+      EOF
+        chmod 0755 /usr/local/libexec/rosetta-cpuinfo-validate
+
         tee /etc/systemd/system/rosetta-ready.service >/dev/null <<'EOF'
       [Unit]
       Description=Verify Lima Rosetta and x86_64 binfmt registration
@@ -286,11 +379,116 @@ provision:
       RemainAfterExit=yes
       EOF
 
+        tee /etc/systemd/system/rosetta-cpuinfo.service >/dev/null <<EOF
+      [Unit]
+      Description=Generate the Rosetta x86_64 CPU view
+      Requires=rosetta-ready.service
+      After=rosetta-ready.service
+      Before=systemd-nspawn@${machine_name}.service
+      ConditionPathExists=${machine_root}/${image_marker}
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/libexec/rosetta-cpuinfo ${machine_root} ${cpuinfo_path}
+      RemainAfterExit=yes
+      EOF
+
+        install -d -m 0755 \
+          "$machine_root/etc/systemd/system" \
+          "$machine_root/etc/systemd/system/sysinit.target.wants"
+        tee "$machine_root/etc/systemd/system/proc-cpuinfo.mount" >/dev/null <<'EOF'
+      [Unit]
+      Description=Present the Rosetta x86_64 CPU view
+      DefaultDependencies=no
+      Before=sysinit.target
+      ConditionPathExists=/mnt/lima-cpuinfo
+
+      [Mount]
+      What=/mnt/lima-cpuinfo
+      Where=/proc/cpuinfo
+      Type=none
+      Options=bind,ro
+
+      [Install]
+      WantedBy=sysinit.target
+      EOF
+        ln -sfn \
+          ../proc-cpuinfo.mount \
+          "$machine_root/etc/systemd/system/sysinit.target.wants/proc-cpuinfo.mount"
+
+        install -d -m 0755 "$machine_root/usr/local/libexec"
+        tee "$machine_root/usr/local/libexec/rosetta-cpuinfo-check" >/dev/null <<'EOF'
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+
+      # Absolute-path reads in this translated process reach Rosetta's live
+      # x86_64 view; lscpu below reads through a relative openat() and sees
+      # the bind-mounted capture. Cross-checking both proves they agree.
+      expected="$(getconf _NPROCESSORS_ONLN)"
+      counts="$(/usr/local/libexec/rosetta-cpuinfo-validate \
+        /proc/cpuinfo "$expected")"
+      processors="${counts%% *}"
+
+      cpuinfo_vendor="$(
+        awk -F: '
+          /^vendor_id[[:space:]]*:/ {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2)
+            print $2
+            exit
+          }
+        ' /proc/cpuinfo
+      )"
+
+      lscpu_output="$(LC_ALL=C lscpu)"
+      field() {
+        local name="$1"
+        awk -F: -v name="$name" '
+          {
+            key = $1
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+            if (key == name) {
+              sub(/^[^:]*:[[:space:]]*/, "")
+              print
+              exit
+            }
+          }
+        ' <<<"$lscpu_output"
+      }
+
+      architecture="$(field Architecture)"
+      op_modes="$(field 'CPU op-mode(s)')"
+      vendor="$(field 'Vendor ID')"
+      flags="$(field Flags)"
+
+      [[ "$architecture" == x86_64 ]]
+      [[ "$op_modes" == *64-bit* ]]
+      [[ -n "$vendor" && "$vendor" == "$cpuinfo_vendor" ]]
+      [[ -n "$flags" ]]
+      if grep -Eiq \
+        '(^|[[:space:]])(asimd|paca|pacg|sve|sve2)([[:space:]]|$)' \
+        <<<"$flags"; then
+        echo "lscpu leaked ARM feature flags" >&2
+        exit 1
+      fi
+
+      test -r /mnt/lima-cpuinfo
+
+      printf '  processors: %s\n' "$processors"
+      printf '  Architecture: %s\n' "$architecture"
+      printf '  CPU op-mode(s): %s\n' "$op_modes"
+      printf '  Vendor ID: %s\n' "$vendor"
+      printf '  Model name: %s\n' "$(field 'Model name')"
+      EOF
+        chmod 0755 "$machine_root/usr/local/libexec/rosetta-cpuinfo-check"
+        install -m 0755 \
+          /usr/local/libexec/rosetta-cpuinfo-validate \
+          "$machine_root/usr/local/libexec/rosetta-cpuinfo-validate"
+
         install -d -m 0755 "/etc/systemd/system/systemd-nspawn@${machine_name}.service.d"
         tee "/etc/systemd/system/systemd-nspawn@${machine_name}.service.d/override.conf" >/dev/null <<EOF
       [Unit]
-      Requires=rosetta-ready.service
-      After=rosetta-ready.service network-online.target
+      Requires=rosetta-ready.service rosetta-cpuinfo.service
+      After=rosetta-ready.service rosetta-cpuinfo.service network-online.target
       Wants=network-online.target
       ConditionPathExists=${machine_root}/${image_marker}
 
@@ -387,8 +585,11 @@ provision:
           "$machine_root" \
           "$guest_home" \
           /usr/local/bin/x86 \
+          /usr/local/libexec/rosetta-cpuinfo \
+          /usr/local/libexec/rosetta-cpuinfo-validate \
           /usr/local/libexec/rosetta-ready \
           "/etc/systemd/nspawn/${machine_name}.nspawn" \
+          /etc/systemd/system/rosetta-cpuinfo.service \
           /etc/systemd/system/rosetta-ready.service \
           "/etc/systemd/system/systemd-nspawn@${machine_name}.service.d" \
           /etc/sudoers.d/90-lima-fedora-x86 \
@@ -437,6 +638,13 @@ provision:
         done
         nsenter --target "$leader" --mount --uts --ipc --net --pid --root --wd \
           /bin/busctl --system --no-pager list >/dev/null
+        nsenter --target "$leader" --mount --uts --ipc --net --pid --root --wd \
+          /usr/local/libexec/rosetta-cpuinfo-check >/dev/null
+        # The leader's mount table IS the machine's mount namespace. Read it
+        # natively: a translated findmnt could itself be subject to Rosetta's
+        # /proc path handling.
+        awk '$5 == "/proc/cpuinfo" && $6 ~ /(^|,)ro(,|$)/ { ok = 1 }
+             END { exit !ok }' "/proc/$leader/mountinfo"
       }
 
       ensure_outer_tools
@@ -451,6 +659,8 @@ provision:
       systemctl daemon-reload
       systemctl add-wants multi-user.target rosetta-ready.service
       systemctl add-wants multi-user.target "systemd-nspawn@${machine_name}.service"
+      systemctl stop "systemd-nspawn@${machine_name}.service" 2>/dev/null || true
+      systemctl restart rosetta-cpuinfo.service
       systemctl restart "systemd-nspawn@${machine_name}.service"
       verify_userspace
       systemctl reload sshd

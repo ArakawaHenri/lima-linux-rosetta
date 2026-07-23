@@ -19,6 +19,8 @@ sessions into it.
 - The tested Full-LTO ARM64 kernel configuration.
 - A Lima template that builds a Fedora 44 x86_64 userspace from signed Fedora
   repositories.
+- An upgrade-resistant `/proc/cpuinfo` hook that keeps ordinary x86_64 CPU
+  discovery coherent.
 - Build, install, runtime-verification, and troubleshooting tools.
 
 The prebuilt kernel is not committed; build artifacts belong in a release,
@@ -161,6 +163,27 @@ The inner `systemd-binfmt.service` is masked because both systems share one
 kernel `binfmt_misc` registry, owned by the outer supervisor. Full failure
 chains: [systemd and Rosetta](lima-rosetta/docs/systemd-rosetta.md).
 
+## Coherent CPU identity
+
+Rosetta synthesizes an x86_64 `/proc/cpuinfo` for an absolute-path read, but
+util-linux 2.41.5 `lscpu` opens `/proc` and then reads `cpuinfo` relative to
+that directory. That path can bypass Rosetta's synthetic view and mix an
+x86_64 architecture with ARM fields and feature flags.
+
+The template does not use `LD_PRELOAD`, replace `lscpu`, or hard-code a CPU
+model. Before the inner machine starts, an outer service asks Rosetta itself
+for the current x86_64 view, validates it, and publishes it atomically. nspawn
+then exposes the file to the inner system, where an early mount unit places it
+read-only over `/proc/cpuinfo`. It is regenerated on every outer boot, so CPU
+count and future Rosetta changes are picked up while malformed output stops
+the machine instead of silently leaking ARM data. Files under `/etc` and
+`/var/lib/lima-rosetta` are outside RPM ownership, so inner `dnf` upgrades do
+not undo the hook.
+
+This fixes conventional userspace discovery only: low-level sysfs, kernel
+interfaces, modules, eBPF, and architecture-specific ioctls still describe
+the real ARM64 kernel.
+
 ## Known issue: intermittent journald SIGTRAP
 
 The tested Rosetta build can assert when journald's read of
@@ -219,9 +242,10 @@ Primary references:
 
 Tested on Apple M1 with kernel `6.18.39-rosetta-tso-lto`, a Fedora 44 ARM64
 supervisor, and a Fedora 44 x86_64 userspace (systemd 259.7): TSO/default
-`PR_SET_MEM_MODEL` transitions, journald/dbus-broker/logind, `dnf upgrade`,
-cold restarts, interactive job control, noninteractive Lima commands, and
-strict detection of the journald assertion above.
+`PR_SET_MEM_MODEL` transitions, coherent `/proc/cpuinfo` and `lscpu`,
+journald/dbus-broker/logind, `dnf upgrade`, cold restarts, interactive job
+control, noninteractive Lima commands, and strict detection of the journald
+assertion above.
 
 ## Licensing
 

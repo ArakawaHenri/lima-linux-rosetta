@@ -117,6 +117,45 @@ Working as intended: `uname` is an x86_64 binary and Rosetta presents the
 translated view. Run `uname -m` in the ARM64 supervisor (see above) for the
 real architecture.
 
+## `lscpu` shows ARM fields or only 32-bit mode
+
+The CPU-view hook is absent or did not mount. A healthy inner system reports
+`Architecture: x86_64`, includes `64-bit` in `CPU op-mode(s)`, and uses the
+same vendor in `lscpu` and `/proc/cpuinfo`:
+
+```sh
+lscpu
+grep -m1 '^vendor_id' /proc/cpuinfo
+```
+
+From the ARM64 supervisor, inspect the generator, the mount unit, and the
+mount table. Read the table natively — a translated `findmnt` inside the
+machine can itself be subject to Rosetta's `/proc` path handling:
+
+```sh
+systemctl status rosetta-cpuinfo.service
+journalctl -b -u rosetta-cpuinfo.service \
+  -u systemd-nspawn@fedora-x86.service
+machinectl shell fedora-x86 /usr/bin/systemctl status proc-cpuinfo.mount
+sudo grep -m1 ' /proc/cpuinfo ' \
+  "/proc/$(machinectl show fedora-x86 -p Leader --value)/mountinfo"
+```
+
+The mount unit must be active, and the mountinfo line must show
+`/proc/cpuinfo` with `ro` in its options.
+
+To regenerate manually, stop the inner machine first so its bind mount cannot
+retain the old inode:
+
+```sh
+sudo systemctl stop systemd-nspawn@fedora-x86.service
+sudo systemctl restart rosetta-cpuinfo.service
+sudo systemctl start systemd-nspawn@fedora-x86.service
+```
+
+Do not replace `lscpu` or pin util-linux. The template-level hook covers
+updated and newly installed tools that read `/proc/cpuinfo`.
+
 ## Reinstall the template
 
 Installing again is idempotent when the files match:
@@ -136,7 +175,8 @@ review the target and use `--force` only when replacement is intentional.
 ```
 
 The verifier checks the outer kernel, TSO controls, Rosetta registration,
-inner architecture, systemd state, core-service restart counters, D-Bus,
-inner and outer coredumps, and the noninteractive and interactive PTY gateway
-paths. The first command tolerates only the documented journald assertion;
-the second requires a completely clean boot.
+inner architecture, the read-only coherent CPU view, systemd state,
+core-service restart counters, D-Bus, inner and outer coredumps, and the
+noninteractive and interactive PTY gateway paths. The first command tolerates
+only the documented journald assertion; the second requires a completely
+clean boot.
