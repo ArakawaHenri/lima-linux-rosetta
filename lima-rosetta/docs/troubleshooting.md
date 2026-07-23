@@ -52,6 +52,20 @@ before reboot.
 After repair, expect `tty` to print a `/dev/pts/*` device, `set -o | grep
 monitor` to be on, and `jobs -l` to list a backgrounded `sleep`.
 
+## `limactl shell` unexpectedly lands in ARM64
+
+Compare `limactl shell fedora-x86 -- uname -m` with the fresh-connection
+command under "Access the ARM64 supervisor". If only the reused Lima
+connection reports `aarch64`, an SSH ControlMaster authenticated before the
+gateway policy was installed. The current template evicts that bootstrap
+session automatically. For an older existing instance, a stop/start discards
+the stale connection:
+
+```sh
+limactl stop fedora-x86
+limactl start fedora-x86
+```
+
 ## systemd services produce SIGTRAP
 
 Check the effective policy:

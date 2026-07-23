@@ -108,6 +108,10 @@ SSH 网关按连接是否带 TTY 选择方式：
 避免 `cannot set terminal process group` / `no job control`，同时保持非交互
 命令的管道语义。
 
+Lima 会在首次 provision 前建立 SSH ControlMaster，而 sshd 在认证时确定
+`ForceCommand`。模板安装网关后会只淘汰这条旧的 Lima 用户会话，让 Lima
+自动重连，因此首个 `limactl shell` 也不会复用旧策略而落进 ARM64 外层。
+
 更多细节：
 
 - [架构与边界](architecture.md)

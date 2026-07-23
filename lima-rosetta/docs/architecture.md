@@ -83,6 +83,13 @@ gateway has two paths:
 `--pipe` on an interactive shell leaves Bash without a controlling terminal
 ("no job control"); see [troubleshooting](troubleshooting.md).
 
+Lima establishes its persistent SSH ControlMaster before first-boot
+provisioning, and sshd fixes `ForceCommand` policy when a connection
+authenticates. After installing and reloading the gateway policy, provisioning
+therefore evicts only the Lima user's old sshd session. Lima reconnects
+automatically, so the first post-provision `limactl shell` cannot reuse a
+pre-policy connection and escape into the ARM64 supervisor.
+
 ## Persistence and upgrades
 
 The inner root filesystem and guest home live on the instance disk. The

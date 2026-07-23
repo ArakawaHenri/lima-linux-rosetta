@@ -664,3 +664,11 @@ provision:
       systemctl restart "systemd-nspawn@${machine_name}.service"
       verify_userspace
       systemctl reload sshd
+
+      # Lima authenticates its persistent SSH ControlMaster before first-boot
+      # provisioning. sshd fixes ForceCommand policy at authentication time,
+      # so evict that pre-policy session and let Lima reconnect through the
+      # x86 gateway. Provisioning runs locally from cidata, not through this
+      # SSH session. Cover both current and older OpenSSH process names.
+      pkill -TERM -u "$lima_uid" -x sshd-session 2>/dev/null || true
+      pkill -TERM -u "$lima_uid" -x sshd 2>/dev/null || true
