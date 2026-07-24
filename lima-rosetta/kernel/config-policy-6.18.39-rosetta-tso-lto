@@ -1,0 +1,113 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Effective project policy for the Linux 6.18.39 Rosetta kernel. Each
+# non-comment line uses final .config syntax. configure-kernel.sh applies this
+# file, resolves Kconfig dependencies, and then requires every line to survive
+# exactly; tests/static-checks.sh checks the committed resolved configuration
+# against the same contract.
+
+## Build identity and compiler policy
+CONFIG_LOCALVERSION="-rosetta-tso-lto"
+# CONFIG_LOCALVERSION_AUTO is not set
+CONFIG_CC_IS_CLANG=y
+CONFIG_LD_IS_LLD=y
+CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
+# CONFIG_CC_OPTIMIZE_FOR_SIZE is not set
+# CONFIG_LTO_NONE is not set
+# CONFIG_LTO_CLANG_THIN is not set
+CONFIG_LTO_CLANG_FULL=y
+CONFIG_ARM64_TSO=y
+# CONFIG_CFI is not set
+# CONFIG_SHADOW_CALL_STACK is not set
+
+## Boot, memory, and core runtime
+CONFIG_BTRFS_FS=y
+CONFIG_BTRFS_FS_POSIX_ACL=y
+CONFIG_EXT4_FS=y
+CONFIG_RD_ZSTD=y
+CONFIG_PSI=y
+# CONFIG_PSI_DEFAULT_DISABLED is not set
+# CONFIG_RT_GROUP_SCHED is not set
+# CONFIG_FW_LOADER_USER_HELPER is not set
+# CONFIG_NUMA is not set
+# CONFIG_SCHED_AUTOGROUP is not set
+# CONFIG_MODULES is not set
+# CONFIG_UEVENT_HELPER is not set
+# CONFIG_BPF_PRELOAD is not set
+
+## Keep expert controls available while disabling their debug payloads
+CONFIG_EXPERT=y
+CONFIG_DEBUG_KERNEL=y
+# CONFIG_DEBUG_MISC is not set
+# CONFIG_DEBUG_FS is not set
+# CONFIG_DEBUG_LIST is not set
+# CONFIG_DEBUG_MEMORY_INIT is not set
+# CONFIG_DYNAMIC_DEBUG is not set
+# CONFIG_DYNAMIC_DEBUG_CORE is not set
+# CONFIG_ZSMALLOC_STAT is not set
+# CONFIG_PCI_DEBUG is not set
+# CONFIG_PPS_DEBUG is not set
+# CONFIG_JBD2_DEBUG is not set
+# CONFIG_SLUB_DEBUG is not set
+# CONFIG_BUG_ON_DATA_CORRUPTION is not set
+# CONFIG_EXT4_DEBUG is not set
+
+## Fixed Virtualization.framework hardware and headless console
+# CONFIG_FUSE_DAX is not set
+# CONFIG_VIRTIO_PCI_LEGACY is not set
+# CONFIG_VIRTIO_PMEM is not set
+# CONFIG_VIRTIO_IOMMU is not set
+CONFIG_ACPI=y
+CONFIG_PCI_HOST_GENERIC=y
+CONFIG_SERIAL_AMBA_PL011_CONSOLE=y
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_VIRTIO_NET=y
+CONFIG_VIRTIO_CONSOLE=y
+CONFIG_VIRTIO_FS=y
+CONFIG_VIRTIO_VSOCKETS=y
+# CONFIG_VIRTUALIZATION is not set
+# CONFIG_KEXEC_FILE is not set
+# CONFIG_HIBERNATION is not set
+# CONFIG_SUSPEND is not set
+# CONFIG_CPU_FREQ is not set
+CONFIG_CPU_IDLE=y
+# CONFIG_DRM is not set
+# CONFIG_FB is not set
+# CONFIG_VT is not set
+CONFIG_ACPI_TINY_POWER_BUTTON=y
+# CONFIG_INPUT is not set
+# CONFIG_I2C is not set
+# CONFIG_GPIOLIB is not set
+CONFIG_THERMAL=y
+# CONFIG_WATCHDOG is not set
+
+## RTC, storage, and filesystems
+CONFIG_RTC_CLASS=y
+CONFIG_RTC_HCTOSYS=y
+CONFIG_RTC_HCTOSYS_DEVICE="rtc0"
+CONFIG_RTC_SYSTOHC=y
+CONFIG_RTC_SYSTOHC_DEVICE="rtc0"
+# CONFIG_RTC_DRV_PL030 is not set
+CONFIG_RTC_DRV_PL031=y
+# CONFIG_SCSI is not set
+
+## Security and LSM policy
+# CONFIG_BPF_JIT is not set
+CONFIG_BPF_UNPRIV_DEFAULT_OFF=y
+# CONFIG_FTRACE is not set
+CONFIG_BINFMT_MISC=y
+CONFIG_CGROUPS=y
+CONFIG_NAMESPACES=y
+CONFIG_SECCOMP_FILTER=y
+CONFIG_SECURITY=y
+CONFIG_SECURITY_NETWORK=y
+CONFIG_SECURITY_SELINUX=y
+CONFIG_SECURITY_SELINUX_BOOTPARAM=y
+CONFIG_SECURITY_SELINUX_DEVELOP=y
+CONFIG_SECURITY_YAMA=y
+CONFIG_SECURITY_LOCKDOWN_LSM=y
+# CONFIG_SECURITY_LOCKDOWN_LSM_EARLY is not set
+CONFIG_LOCK_DOWN_KERNEL_FORCE_NONE=y
+CONFIG_SECURITY_LANDLOCK=y
+CONFIG_LSM="landlock,lockdown,yama,selinux"

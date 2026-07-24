@@ -34,11 +34,13 @@ The port makes two deliberate changes to Apple's 6.10 patch:
 ## Configuration
 
 `configure-kernel.sh` migrates `apple-containerization-config-arm64` with
-`olddefconfig`, applies the project delta, resolves dependencies again, and
-asserts the result. The checked-in final configuration has SHA-256:
+`olddefconfig`, applies the effective settings from
+`config-policy-6.18.39-rosetta-tso-lto`, resolves dependencies again, and
+requires every policy line to survive exactly. The same policy validates the
+checked-in resolved configuration. Its SHA-256 is:
 
 ```text
-637bfe7354a9640e0052dd75385aa19c3c3fefe733fd46ffe0d827637ecff4f4
+1c516e3818906283777aff254c4b3bda3bf006f14f3306fa9e68b3c3fb52f53d
 ```
 
 Key settings:
@@ -54,11 +56,26 @@ CONFIG_CGROUPS=y
 CONFIG_NAMESPACES=y
 CONFIG_SECCOMP_FILTER=y
 CONFIG_SECURITY_SELINUX=y
+CONFIG_SECURITY_LANDLOCK=y
+CONFIG_SECURITY_LOCKDOWN_LSM=y
+CONFIG_BPF_UNPRIV_DEFAULT_OFF=y
+CONFIG_CPU_IDLE=y                       # selected by ACPI_PROCESSOR
+CONFIG_THERMAL=y                        # selected by ACPI_PROCESSOR
+# CONFIG_DEBUG_FS is not set
+# CONFIG_FTRACE is not set
+# CONFIG_INPUT is not set               # headless; tiny ACPI power button
 # CONFIG_MODULES is not set
 ```
 
-CFI and shadow call stack are disabled to keep this minimal runtime
-configuration free of constraints unrelated to the Rosetta workload.
+The policy retains ACPI processor idle and thermal support, which are coherent
+dependencies of the VZ ACPI processor driver. It replaces the unused virtual
+terminal and input stack with the ACPI tiny power-button driver, and removes
+the debugfs and accidentally enabled debug payloads. CFI and shadow call stack
+remain disabled to keep this minimal runtime free of constraints unrelated to
+the Rosetta workload. Landlock, lockdown, SELinux, and Yama are compiled and
+listed in matching initialization order. Lockdown defaults to no enforcement.
+BPF LSM is omitted because this kernel does not carry BTF debug information or
+install a BPF security policy; unprivileged BPF remains disabled by default.
 
 ## Reproducible build
 

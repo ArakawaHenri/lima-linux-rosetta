@@ -14,6 +14,10 @@ command -v limactl >/dev/null || {
   exit 1
 }
 
+if [[ -n "$(git -C "$source_dir" status --short)" ]]; then
+  printf 'warning: the working tree is dirty; this command builds HEAD only\n' >&2
+fi
+
 status="$(limactl list "$builder" --format '{{.Status}}' 2>/dev/null || true)"
 case "$status" in
   Running)

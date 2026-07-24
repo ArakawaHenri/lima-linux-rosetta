@@ -16,12 +16,38 @@ bash -n \
   "${project_dir}/lima/verify-runtime.sh"
 sh -n "${project_dir}/kernel/configure-kernel.sh"
 
-grep -qx 'CONFIG_ARM64_TSO=y' \
-  "${project_dir}/kernel/config-6.18.39-rosetta-tso-lto"
-grep -qx 'CONFIG_LTO_CLANG_FULL=y' \
-  "${project_dir}/kernel/config-6.18.39-rosetta-tso-lto"
-grep -qx '# CONFIG_MODULES is not set' \
-  "${project_dir}/kernel/config-6.18.39-rosetta-tso-lto"
+config="${project_dir}/kernel/config-6.18.39-rosetta-tso-lto"
+policy="${project_dir}/kernel/config-policy-6.18.39-rosetta-tso-lto"
+while IFS= read -r setting || [[ -n "$setting" ]]; do
+  case "$setting" in
+    ''|'#'|'## '*) continue ;;
+    '# CONFIG_'*' is not set'|CONFIG_*=*) ;;
+    '# CONFIG_'*)
+      printf 'invalid policy setting: %s\n' "$setting" >&2
+      exit 1
+      ;;
+    '# '*) continue ;;
+    *)
+      printf 'invalid policy setting: %s\n' "$setting" >&2
+      exit 1
+      ;;
+  esac
+  grep -qxF "$setting" "$config" || {
+    printf 'checked-in configuration violates policy: %s\n' "$setting" >&2
+    exit 1
+  }
+done <"$policy"
+
+if command -v sha256sum >/dev/null; then
+  config_sha256="$(sha256sum "$config" | awk '{print $1}')"
+else
+  config_sha256="$(shasum -a 256 "$config" | awk '{print $1}')"
+fi
+grep -qF "$config_sha256" "${project_dir}/docs/kernel.md" || {
+  printf 'kernel documentation has a stale config SHA-256: %s\n' \
+    "$config_sha256" >&2
+  exit 1
+}
 
 test "$(grep -c '@@KERNEL_IMAGE@@' "${project_dir}/lima/fedora-x86.yaml.in")" -eq 1
 test "$(grep -c '@@KERNEL_SHA256@@' "${project_dir}/lima/fedora-x86.yaml.in")" -eq 1
